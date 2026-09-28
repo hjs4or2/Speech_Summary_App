@@ -5,6 +5,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.concurrent.thread
@@ -20,6 +21,7 @@ class AudioRecorder(private val outputDir: File) {
         outputDir.mkdirs()
         val file = File(outputDir, "recording_${System.currentTimeMillis()}.wav")
         val min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        check(min > 0) { "Audio format unavailable" }
         val bufferSize = (min * 2).coerceAtLeast(2048)
         val audio = AudioRecord(MediaRecorder.AudioSource.MIC, RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
         check(audio.state == AudioRecord.STATE_INITIALIZED) { "Microphone unavailable" }
@@ -38,7 +40,7 @@ class AudioRecorder(private val outputDir: File) {
         val audio = recorder ?: return null
         recorder = null
         try { audio.stop() } catch (_: IllegalStateException) { }
-        audio.release(); worker?.join(1000); worker = null
+        worker?.join(); worker = null; audio.release()
         return currentFile.also { currentFile = null }
     }
 
@@ -48,7 +50,7 @@ class AudioRecorder(private val outputDir: File) {
         header.putInt(16); header.putShort(1); header.putShort(CHANNELS.toShort()); header.putInt(RATE)
         header.putInt(RATE * CHANNELS * BITS / 8); header.putShort((CHANNELS * BITS / 8).toShort()); header.putShort(BITS.toShort())
         header.put("data".toByteArray()); header.putInt(dataSize)
-        FileOutputStream(file, false).use { it.write(header.array()) }
+        RandomAccessFile(file, "rw").use { it.seek(0); it.write(header.array()) }
     }
 }
 
