@@ -1,4 +1,4 @@
-package com.app.speechsummary
+package com.app.speechsummary.audio
 
 import android.media.AudioFormat
 import android.media.AudioRecord

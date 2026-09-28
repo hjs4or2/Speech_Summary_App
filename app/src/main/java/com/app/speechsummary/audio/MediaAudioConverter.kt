@@ -1,4 +1,4 @@
-package com.app.speechsummary
+package com.app.speechsummary.audio
 
 import android.content.Context
 import android.media.MediaCodec

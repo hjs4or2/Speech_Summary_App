@@ -19,3 +19,4 @@ android-studio-installer.exe
 cmdline-tools.zip
 .gradle-user/
 app/src/main/assets/ggml-base.bin
+/dist/

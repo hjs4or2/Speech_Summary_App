@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <sys/sysinfo.h>
 #include <string.h>
+#include <stdatomic.h>
+#include <pthread.h>
 #include "whisper.h"
 #include "ggml.h"
 
@@ -13,6 +15,42 @@
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,     TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,     TAG, __VA_ARGS__)
+
+// One cancel flag per model context permits independent, concurrent jobs.
+struct cancel_state {
+    struct whisper_context *context;
+    atomic_bool abort;
+    struct cancel_state *next;
+};
+
+static pthread_mutex_t cancel_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct cancel_state *cancel_states = NULL;
+
+static struct cancel_state *find_cancel_state(struct whisper_context *context) {
+    struct cancel_state *state = cancel_states;
+    while (state && state->context != context) state = state->next;
+    return state;
+}
+
+static jlong register_context(struct whisper_context *context) {
+    if (!context) return 0;
+    struct cancel_state *state = calloc(1, sizeof(*state));
+    if (!state) {
+        whisper_free(context);
+        return 0;
+    }
+    state->context = context;
+    atomic_init(&state->abort, false);
+    pthread_mutex_lock(&cancel_mutex);
+    state->next = cancel_states;
+    cancel_states = state;
+    pthread_mutex_unlock(&cancel_mutex);
+    return (jlong)context;
+}
+
+static bool should_abort_transcription(void *data) {
+    return atomic_load(&((struct cancel_state *)data)->abort);
+}
 
 static inline int min(int a, int b) {
     return (a < b) ? a : b;
@@ -67,7 +105,7 @@ void inputStreamClose(void * ctx) {
 }
 
 JNIEXPORT jlong JNICALL
-Java_com_whispercppdemo_whisper_WhisperLib_00024Companion_initContextFromInputStream(
+Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContextFromInputStream(
         JNIEnv *env, jobject thiz, jobject input_stream) {
     UNUSED(thiz);
 
@@ -91,8 +129,8 @@ Java_com_whispercppdemo_whisper_WhisperLib_00024Companion_initContextFromInputSt
 
     loader.eof(loader.context);
 
-    context = whisper_init(&loader);
-    return (jlong) context;
+    context = whisper_init_with_params(&loader, whisper_context_default_params());
+    return register_context(context);
 }
 
 static size_t asset_read(void *ctx, void *output, size_t read_size) {
@@ -138,7 +176,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContextFromAsset(
     const char *asset_path_chars = (*env)->GetStringUTFChars(env, asset_path_str, NULL);
     context = whisper_init_from_asset(env, assetManager, asset_path_chars);
     (*env)->ReleaseStringUTFChars(env, asset_path_str, asset_path_chars);
-    return (jlong) context;
+    return register_context(context);
 }
 
 JNIEXPORT jlong JNICALL
@@ -149,7 +187,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContext(
     const char *model_path_chars = (*env)->GetStringUTFChars(env, model_path_str, NULL);
     context = whisper_init_from_file_with_params(model_path_chars, whisper_context_default_params());
     (*env)->ReleaseStringUTFChars(env, model_path_str, model_path_chars);
-    return (jlong) context;
+    return register_context(context);
 }
 
 JNIEXPORT void JNICALL
@@ -158,14 +196,25 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_freeContext(
     UNUSED(env);
     UNUSED(thiz);
     struct whisper_context *context = (struct whisper_context *) context_ptr;
+    pthread_mutex_lock(&cancel_mutex);
+    struct cancel_state **slot = &cancel_states;
+    while (*slot && (*slot)->context != context) slot = &(*slot)->next;
+    struct cancel_state *state = *slot;
+    if (state) *slot = state->next;
+    pthread_mutex_unlock(&cancel_mutex);
     whisper_free(context);
+    free(state);
 }
 
-JNIEXPORT void JNICALL
+JNIEXPORT jint JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
         JNIEnv *env, jobject thiz, jlong context_ptr, jint num_threads, jfloatArray audio_data) {
     UNUSED(thiz);
     struct whisper_context *context = (struct whisper_context *) context_ptr;
+    pthread_mutex_lock(&cancel_mutex);
+    struct cancel_state *cancel = find_cancel_state(context);
+    pthread_mutex_unlock(&cancel_mutex);
+    if (!cancel) return -1;
     jfloat *audio_data_arr = (*env)->GetFloatArrayElements(env, audio_data, NULL);
     const jsize audio_data_length = (*env)->GetArrayLength(env, audio_data);
 
@@ -181,16 +230,42 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
     params.offset_ms = 0;
     params.no_context = true;
     params.single_segment = false;
+    params.abort_callback = should_abort_transcription;
+    params.abort_callback_user_data = cancel;
 
     whisper_reset_timings(context);
 
     LOGI("About to run whisper_full");
-    if (whisper_full(context, params, audio_data_arr, audio_data_length) != 0) {
+    int result = whisper_full(context, params, audio_data_arr, audio_data_length);
+    if (result != 0) {
         LOGI("Failed to run the model");
     } else {
         whisper_print_timings(context);
     }
     (*env)->ReleaseFloatArrayElements(env, audio_data, audio_data_arr, JNI_ABORT);
+    return result;
+}
+
+JNIEXPORT void JNICALL
+Java_com_whispercpp_whisper_WhisperLib_00024Companion_requestAbort(
+        JNIEnv *env, jobject thiz, jlong context_ptr) {
+    UNUSED(env);
+    UNUSED(thiz);
+    pthread_mutex_lock(&cancel_mutex);
+    struct cancel_state *state = find_cancel_state((struct whisper_context *)context_ptr);
+    if (state) atomic_store(&state->abort, true);
+    pthread_mutex_unlock(&cancel_mutex);
+}
+
+JNIEXPORT void JNICALL
+Java_com_whispercpp_whisper_WhisperLib_00024Companion_resetAbort(
+        JNIEnv *env, jobject thiz, jlong context_ptr) {
+    UNUSED(env);
+    UNUSED(thiz);
+    pthread_mutex_lock(&cancel_mutex);
+    struct cancel_state *state = find_cancel_state((struct whisper_context *)context_ptr);
+    if (state) atomic_store(&state->abort, false);
+    pthread_mutex_unlock(&cancel_mutex);
 }
 
 JNIEXPORT jint JNICALL
