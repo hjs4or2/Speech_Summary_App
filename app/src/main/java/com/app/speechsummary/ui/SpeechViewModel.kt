@@ -10,9 +10,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.app.speechsummary.audio.AudioPlaybackController
+import com.app.speechsummary.audio.PlaybackState
 import com.app.speechsummary.data.SpeechItem
 import com.app.speechsummary.data.SpeechRepository
 import com.app.speechsummary.stt.WhisperTranscriber
+import com.app.speechsummary.stt.TranscriptionStage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,19 +26,21 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
-enum class ExtractionPhase { QUEUED, RUNNING, CANCELLING }
+enum class ExtractionPhase { QUEUED, LOADING, RUNNING, DIARIZING, CANCELLING }
 
 data class ExtractionStatus(
     val phase: ExtractionPhase,
     val processedSeconds: Long = 0,
     val totalSeconds: Long,
-    val elapsedSeconds: Long = 0
+    val elapsedSeconds: Long = 0,
+    val phaseElapsedSeconds: Long = 0
 )
 
 data class SpeechUiState(
     val recording: Boolean = false,
     val recordingBusy: Boolean = false,
     val importing: Boolean = false,
+    val playback: PlaybackState = PlaybackState(),
     val parallelLimit: Int = 1,
     val files: List<SpeechItem> = emptyList(),
     val extractions: Map<String, ExtractionStatus> = emptyMap(),
@@ -44,15 +49,18 @@ data class SpeechUiState(
 )
 
 class SpeechViewModel(application: Application) : AndroidViewModel(application) {
+    private data class PendingExtraction(val itemId: String, val expectedSpeakerCount: Int?)
+
     private data class RunningTask(
         val transcriber: WhisperTranscriber,
         val startedAtMs: Long,
+        var phaseStartedAtMs: Long = startedAtMs,
         var job: Job? = null
     )
 
     private val repository = SpeechRepository(application)
     private val preferences = application.getSharedPreferences("speech_settings", Context.MODE_PRIVATE)
-    private val pending = ArrayDeque<String>()
+    private val pending = ArrayDeque<PendingExtraction>()
     private val running = mutableMapOf<String, RunningTask>()
     private var tickerJob: Job? = null
 
@@ -62,7 +70,24 @@ class SpeechViewModel(application: Application) : AndroidViewModel(application) 
     ))
         private set
 
+    private val audioPlayback = AudioPlaybackController(
+        application,
+        onStateChanged = { state = state.copy(playback = it) },
+        onError = { log("재생 실패: $it") }
+    )
+
     init { log("준비됨") }
+
+    fun togglePlayback(itemId: String) {
+        if (state.recording || state.recordingBusy) return
+        try {
+            audioPlayback.toggle(itemId, repository.fileFor(itemId))
+        } catch (e: Exception) {
+            log("재생 실패: ${e.message}")
+        }
+    }
+
+    fun pausePlayback() = audioPlayback.pause()
 
     private fun log(message: String) {
         val timestamp = DateFormat.format("HH:mm:ss", System.currentTimeMillis())
@@ -84,6 +109,7 @@ class SpeechViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun startRecording() {
+        audioPlayback.pause()
         state = state.copy(recordingBusy = true)
         log("녹음 준비 중...")
         viewModelScope.launch {
@@ -123,6 +149,31 @@ class SpeechViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun renameTitle(itemId: String, title: String) {
+        try {
+            val updated = repository.renameTitle(itemId, title)
+            state = state.copy(files = state.files.map { if (it.id == itemId) updated else it })
+            log("제목 변경: ${updated.name}")
+        } catch (e: Exception) {
+            log("제목 변경 실패: ${e.message}")
+        }
+    }
+
+    fun setSpeakerCount(itemId: String, speakerCount: Int?) {
+        if (state.extractions.containsKey(itemId)) return
+        val current = state.files.firstOrNull { it.id == itemId } ?: return
+        try {
+            val updated = repository.setSpeakerCount(itemId, speakerCount)
+            state = state.copy(files = state.files.map { if (it.id == itemId) updated else it })
+            if (current.speakerCount != updated.speakerCount) {
+                val setting = updated.speakerCount?.let { "${it}명" } ?: "자동 감지"
+                log("화자 수 설정: ${updated.name} - $setting (다음 추출부터 적용)")
+            }
+        } catch (e: Exception) {
+            log("화자 수 설정 실패: ${e.message}")
+        }
+    }
+
     fun extractText(itemId: String) {
         if (state.importing || state.extractions.containsKey(itemId)) return
         val item = state.files.firstOrNull { it.id == itemId } ?: return
@@ -131,33 +182,69 @@ class SpeechViewModel(application: Application) : AndroidViewModel(application) 
             extractions = state.extractions + (itemId to ExtractionStatus(ExtractionPhase.QUEUED, totalSeconds = duration)),
             transcripts = state.transcripts - itemId
         )
-        pending.addLast(itemId)
-        log("텍스트 추출 대기: ${item.name}")
+        pending.addLast(PendingExtraction(itemId, item.speakerCount))
+        val setting = item.speakerCount?.let { "${it}명" } ?: "자동 감지"
+        log("텍스트 추출 대기: ${item.name} (화자 수: $setting)")
         startPending()
     }
 
     private fun startPending() {
         while (running.size < state.parallelLimit && pending.isNotEmpty()) {
-            val itemId = pending.removeFirst()
+            val queued = pending.removeFirst()
+            val itemId = queued.itemId
             val item = state.files.firstOrNull { it.id == itemId } ?: continue
             val status = state.extractions[itemId] ?: continue
             val task = RunningTask(WhisperTranscriber(getApplication()), SystemClock.elapsedRealtime())
             running[itemId] = task
-            state = state.copy(extractions = state.extractions + (itemId to status.copy(phase = ExtractionPhase.RUNNING)))
-            log("텍스트 추출 시작: ${item.name}")
+            state = state.copy(extractions = state.extractions + (itemId to status.copy(phase = ExtractionPhase.LOADING)))
+            val setting = queued.expectedSpeakerCount?.let { "${it}명" } ?: "자동 감지"
+            log("텍스트 추출 시작: ${item.name} (화자 수: $setting)")
             ensureTicker()
             task.job = viewModelScope.launch {
                 try {
                     val text = withContext(Dispatchers.IO) {
-                        task.transcriber.transcribe(repository.fileFor(itemId)) { processed, total ->
-                            withContext(Dispatchers.Main.immediate) {
-                                val current = state.extractions[itemId] ?: return@withContext
-                                state = state.copy(extractions = state.extractions + (
-                                    itemId to current.copy(processedSeconds = processed / 16_000)
-                                ))
-                                log("처리 완료: ${item.name} ${processed / 16_000}/${(total + 15_999) / 16_000}초")
-                            }
-                        }
+                        task.transcriber.transcribe(
+                            repository.fileFor(itemId),
+                            onProgress = { processed, total ->
+                                withContext(Dispatchers.Main.immediate) {
+                                    val current = state.extractions[itemId] ?: return@withContext
+                                    state = state.copy(extractions = state.extractions + (
+                                        itemId to current.copy(processedSeconds = processed / 16_000)
+                                    ))
+                                    log("처리 완료: ${item.name} ${processed / 16_000}/${(total + 15_999) / 16_000}초")
+                                }
+                            },
+                            onDiarizationStart = {
+                                withContext(Dispatchers.Main.immediate) {
+                                    val current = state.extractions[itemId] ?: return@withContext
+                                    if (current.phase == ExtractionPhase.CANCELLING) return@withContext
+                                    task.phaseStartedAtMs = SystemClock.elapsedRealtime()
+                                    state = state.copy(extractions = state.extractions + (
+                                        itemId to current.copy(phase = ExtractionPhase.DIARIZING, phaseElapsedSeconds = 0)
+                                    ))
+                                    log("화자 구분 시작: ${item.name}")
+                                }
+                            },
+                            onStageCompleted = { stage, elapsedMs ->
+                                withContext(Dispatchers.Main.immediate) {
+                                    val stageName = when (stage) {
+                                        TranscriptionStage.MODEL_LOADING -> "모델 준비"
+                                        TranscriptionStage.TEXT_EXTRACTION -> "음성 인식"
+                                        TranscriptionStage.SPEAKER_DIARIZATION -> "화자 구분"
+                                    }
+                                    log("$stageName 소요: ${elapsedMs / 1000.0}초 · ${item.name}")
+                                    if (stage == TranscriptionStage.MODEL_LOADING) {
+                                        val current = state.extractions[itemId] ?: return@withContext
+                                        if (current.phase == ExtractionPhase.CANCELLING) return@withContext
+                                        task.phaseStartedAtMs = SystemClock.elapsedRealtime()
+                                        state = state.copy(extractions = state.extractions + (
+                                            itemId to current.copy(phase = ExtractionPhase.RUNNING, phaseElapsedSeconds = 0)
+                                        ))
+                                    }
+                                }
+                            },
+                            expectedSpeakerCount = queued.expectedSpeakerCount
+                        )
                     }
                     state = state.copy(transcripts = state.transcripts + (itemId to text))
                     log("텍스트 추출 완료: ${item.name}")
@@ -192,7 +279,10 @@ class SpeechViewModel(application: Application) : AndroidViewModel(application) 
                 state = state.copy(extractions = state.extractions.mapValues { (id, status) ->
                     val task = running[id]
                     if (task == null) status
-                    else status.copy(elapsedSeconds = (now - task.startedAtMs) / 1_000)
+                    else status.copy(
+                        elapsedSeconds = (now - task.startedAtMs) / 1_000,
+                        phaseElapsedSeconds = (now - task.phaseStartedAtMs) / 1_000
+                    )
                 })
             }
         }
@@ -201,11 +291,11 @@ class SpeechViewModel(application: Application) : AndroidViewModel(application) 
     fun cancelTranscription(itemId: String) {
         when (state.extractions[itemId]?.phase) {
             ExtractionPhase.QUEUED -> {
-                pending.remove(itemId)
+                pending.removeAll { it.itemId == itemId }
                 state = state.copy(extractions = state.extractions - itemId)
                 log("대기 취소: $itemId")
             }
-            ExtractionPhase.RUNNING -> {
+            ExtractionPhase.LOADING, ExtractionPhase.RUNNING, ExtractionPhase.DIARIZING -> {
                 val task = running[itemId] ?: return
                 val current = state.extractions[itemId] ?: return
                 state = state.copy(extractions = state.extractions + (
@@ -220,6 +310,7 @@ class SpeechViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     override fun onCleared() {
+        audioPlayback.stop()
         running.values.forEach { task ->
             task.transcriber.requestAbort()
             task.job?.cancel()

@@ -10,6 +10,8 @@ import java.util.concurrent.Executors
 
 private const val LOG_TAG = "LibWhisper"
 
+data class WhisperSegment(val startSeconds: Double, val endSeconds: Double, val text: String)
+
 class WhisperContext private constructor(@Volatile private var ptr: Long) {
     // Meet Whisper C++ constraint: Don't access from more than one thread at a time.
     private val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
@@ -30,6 +32,19 @@ class WhisperContext private constructor(@Volatile private var ptr: Long) {
                     append(WhisperLib.getTextSegment(ptr, i))
                 }
             }
+        }
+    }
+
+    suspend fun transcribeSegments(data: FloatArray): List<WhisperSegment> = withContext(dispatcher) {
+        require(ptr != 0L)
+        val numThreads = WhisperCpuConfig.preferredThreadCount
+        check(WhisperLib.fullTranscribe(ptr, numThreads, data) == 0) { "Whisper transcription stopped or failed" }
+        List(WhisperLib.getTextSegmentCount(ptr)) { index ->
+            WhisperSegment(
+                WhisperLib.getTextSegmentT0(ptr, index) / 100.0,
+                WhisperLib.getTextSegmentT1(ptr, index) / 100.0,
+                WhisperLib.getTextSegment(ptr, index).trim()
+            )
         }
     }
 

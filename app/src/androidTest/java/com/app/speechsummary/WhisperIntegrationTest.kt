@@ -14,13 +14,13 @@ import org.junit.runner.RunWith
 class WhisperIntegrationTest {
     @Test fun bundledModelLoadsInNativeWhisper() = runBlocking {
         val assets = InstrumentationRegistry.getInstrumentation().targetContext.assets
-        val context = WhisperContext.createContextFromAsset(assets, "ggml-base.bin")
+        val context = WhisperContext.createContextFromAsset(assets, "ggml-medium.bin")
         try { assertNotNull(context) } finally { context.release() }
     }
 
     @Test fun shortAudioCompletesNativeTranscription() = runBlocking {
         val assets = InstrumentationRegistry.getInstrumentation().targetContext.assets
-        val context = WhisperContext.createContextFromAsset(assets, "ggml-base.bin")
+        val context = WhisperContext.createContextFromAsset(assets, "ggml-medium.bin")
         try {
             val started = SystemClock.elapsedRealtime()
             val result = context.transcribeData(FloatArray(16_000 * 3), printTimestamp = false)

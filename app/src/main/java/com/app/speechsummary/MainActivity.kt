@@ -53,10 +53,18 @@ class MainActivity : ComponentActivity() {
                     },
                     onImportClick = { importLauncher.launch(arrayOf("audio/*", "video/*")) },
                     onExtractText = viewModel::extractText,
+                    onTogglePlayback = viewModel::togglePlayback,
                     onCancelText = viewModel::cancelTranscription,
+                    onRenameTitle = viewModel::renameTitle,
+                    onSpeakerCountChange = viewModel::setSpeakerCount,
                     onSettingsClick = { showSettings = true },
                 )
             }
         }
+    }
+
+    override fun onStop() {
+        if (!isChangingConfigurations) viewModel.pausePlayback()
+        super.onStop()
     }
 }

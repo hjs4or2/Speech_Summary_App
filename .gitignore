@@ -19,4 +19,9 @@ android-studio-installer.exe
 cmdline-tools.zip
 .gradle-user/
 app/src/main/assets/ggml-base.bin
+app/src/main/assets/ggml-small.bin
+app/src/main/assets/ggml-medium.bin
+app/src/main/assets/speaker-*.onnx
+app/libs/*.aar
+/local-models/
 /dist/
