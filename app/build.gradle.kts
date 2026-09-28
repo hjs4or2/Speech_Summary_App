@@ -21,6 +21,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Keep Kotlin/UI debuggable while optimizing CPU-heavy whisper.cpp.
+            externalNativeBuild {
+                cmake { arguments += "-DCMAKE_BUILD_TYPE=Release" }
+            }
+        }
         release {
             optimization {
                 enable = false

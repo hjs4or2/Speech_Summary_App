@@ -36,7 +36,7 @@ data class SpeechUiState(
     val recording: Boolean = false,
     val recordingBusy: Boolean = false,
     val importing: Boolean = false,
-    val parallelLimit: Int = 2,
+    val parallelLimit: Int = 1,
     val files: List<SpeechItem> = emptyList(),
     val extractions: Map<String, ExtractionStatus> = emptyMap(),
     val transcripts: Map<String, String> = emptyMap(),
@@ -58,7 +58,7 @@ class SpeechViewModel(application: Application) : AndroidViewModel(application) 
 
     var state by mutableStateOf(SpeechUiState(
         files = repository.list(),
-        parallelLimit = if (preferences.getBoolean("parallel_enabled", true)) 2 else 1
+        parallelLimit = if (preferences.getBoolean("parallel_enabled", false)) 2 else 1
     ))
         private set
 
