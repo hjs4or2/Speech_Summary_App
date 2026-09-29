@@ -3,6 +3,8 @@ package com.app.speechsummary
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.app.speechsummary.data.DownloadableModels
+import com.app.speechsummary.data.ModelKind
 import com.app.speechsummary.stt.SpeakerDiarizer
 import com.app.speechsummary.stt.WhisperTranscriber
 import com.app.speechsummary.stt.TranscriptionStage
@@ -11,11 +13,20 @@ import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
+import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class SpeakerDiarizerTest {
+    @Before fun requireInstalledModels() {
+        val models = DownloadableModels(InstrumentationRegistry.getInstrumentation().targetContext)
+        listOf(ModelKind.WHISPER, ModelKind.SEGMENTATION, ModelKind.EMBEDDING).forEach {
+            assumeTrue("Install models in the app before the diarization tests", models.file(it).isFile)
+        }
+    }
+
     @Test fun shortClipRunsTranscriptionAndDiarization() = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val file = File(instrumentation.targetContext.cacheDir, "short-speaker-test.pcm")

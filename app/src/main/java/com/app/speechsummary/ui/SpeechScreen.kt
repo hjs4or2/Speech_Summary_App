@@ -28,6 +28,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateMapOf
@@ -44,6 +46,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.app.speechsummary.R
+import com.app.speechsummary.data.ModelKind
+import com.app.speechsummary.data.DiarizationEngine
 
 @Composable
 fun SpeechScreen(
@@ -53,11 +57,13 @@ fun SpeechScreen(
     onExtractText: (String) -> Unit,
     onTogglePlayback: (String) -> Unit,
     onCancelText: (String) -> Unit,
+    onCreateDocument: (String) -> Unit,
+    onCancelDocument: (String) -> Unit,
     onRenameTitle: (String, String) -> Unit,
     onSpeakerCountChange: (String, Int?) -> Unit,
     onSettingsClick: () -> Unit
 ) {
-    val expandedResults = remember { mutableStateMapOf<String, Boolean>() }
+    val selectedTabs = remember { mutableStateMapOf<String, Int>() }
     var editingId by remember { mutableStateOf<String?>(null) }
     var editedTitle by remember { mutableStateOf("") }
     var editingSpeakerId by remember { mutableStateOf<String?>(null) }
@@ -111,6 +117,14 @@ fun SpeechScreen(
                             isError = !validCount
                         )
                         if (!validCount) Text("1~99 사이의 정수를 입력해 주세요.", color = MaterialTheme.colorScheme.error)
+                        if (state.diarizationEngine == DiarizationEngine.NEMOTRON && count != null && count > 8) {
+                            Text("Nemotron 3는 최대 8명까지 지원해. 추출하려면 기존 엔진을 선택해 줘.",
+                                color = MaterialTheme.colorScheme.error)
+                        }
+                        if (state.diarizationEngine == DiarizationEngine.NEMOTRON) {
+                            Text("Nemotron은 실제 화자 수를 자동 감지해. 직접 지정한 수는 8명 상한 검사에만 사용돼.",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                     Text("변경한 설정은 다음 텍스트 추출부터 적용돼요. 기존 추출 결과는 그대로 유지돼요.",
                         style = MaterialTheme.typography.bodySmall)
@@ -168,6 +182,11 @@ fun SpeechScreen(
                 Icon(Icons.Default.Settings, contentDescription = "설정 및 로그")
             }
         }
+        if (state.diarizationEngine == DiarizationEngine.NEMOTRON) {
+            Text("Nemotron 3 화자 구분 · 최대 8명. 9명 이상 회의는 설정에서 기존 엔진을 선택해 줘.",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall)
+        }
         Button(
             onClick = onRecordClick,
             modifier = Modifier.fillMaxWidth(),
@@ -187,6 +206,8 @@ fun SpeechScreen(
             items(state.files, key = { it.id }) { file ->
                 val extraction = state.extractions[file.id]
                 val transcript = state.transcripts[file.id]
+                val stored = state.documents[file.id]
+                val documentJob = state.documentJobs[file.id]
                 val playback = state.playback.takeIf { it.itemId == file.id }
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -232,7 +253,8 @@ fun SpeechScreen(
                                     if (extraction == null) onExtractText(file.id)
                                     else onCancelText(file.id)
                                 },
-                                enabled = if (extraction == null) !state.importing
+                                enabled = if (extraction == null) !state.importing && !state.modelsChecking &&
+                                    state.requiredMissingModels.all { it == ModelKind.QWEN }
                                     else extraction.phase != ExtractionPhase.CANCELLING
                             ) {
                                 if (extraction == null) {
@@ -316,11 +338,45 @@ fun SpeechScreen(
                         }
 
                         if (transcript != null) {
-                            TextButton(onClick = { expandedResults[file.id] = expandedResults[file.id] != true }) {
-                                Text(if (expandedResults[file.id] == true) "추출 결과 접기" else "추출 결과 보기")
+                            TabRow(selectedTabIndex = selectedTabs[file.id] ?: 0) {
+                                Tab(selected = (selectedTabs[file.id] ?: 0) == 0,
+                                    onClick = { selectedTabs[file.id] = 0 }, text = { Text("전체 텍스트") })
+                                Tab(selected = selectedTabs[file.id] == 1,
+                                    onClick = { selectedTabs[file.id] = 1 }, text = { Text("문서화") })
                             }
-                            if (expandedResults[file.id] == true) {
-                                Text(transcript.ifBlank { "인식된 텍스트가 없어." })
+                            when (selectedTabs[file.id] ?: 0) {
+                                0 -> Text(transcript.ifBlank { "인식된 텍스트가 없어." })
+                                1 -> {
+                                    Text("자동 생성 결과야. 결정·할 일과 원문 근거를 직접 확인해 줘.",
+                                        style = MaterialTheme.typography.bodySmall)
+                                    if (stored?.stale == true) {
+                                        Text("원문이 바뀌어 이전 문서야. 다시 생성해 줘.",
+                                            color = MaterialTheme.colorScheme.error)
+                                    }
+                                    if (stored?.document != null) Text(stored.document)
+                                    if (documentJob == null) {
+                                        Button(onClick = { onCreateDocument(file.id) },
+                                            enabled = state.modelStatus == ModelStatus.READY && extraction == null) {
+                                            Text(if (stored?.document == null) "문서 생성" else "문서 다시 생성")
+                                        }
+                                        if (state.modelStatus != ModelStatus.READY) {
+                                            Text("설정에서 Qwen 로컬 모델을 먼저 설치해 줘.")
+                                        }
+                                    } else {
+                                        Text(when (documentJob.phase) {
+                                            DocumentPhase.QUEUED -> "문서화 대기 중 · 음성 인식이 끝나면 시작"
+                                            DocumentPhase.LOADING -> "문서화 모델 불러오는 중"
+                                            DocumentPhase.RUNNING -> "문서화 중 ${documentJob.completedParts}/${documentJob.totalParts}구간"
+                                            DocumentPhase.CANCELLING -> "문서화 취소 중"
+                                        })
+                                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                                        TextButton(onClick = { onCancelDocument(file.id) },
+                                            enabled = documentJob.phase != DocumentPhase.CANCELLING) { Text("취소") }
+                                    }
+                                    state.documentErrors[file.id]?.let {
+                                        Text("문서화 실패: $it", color = MaterialTheme.colorScheme.error)
+                                    }
+                                }
                             }
                         }
                     }

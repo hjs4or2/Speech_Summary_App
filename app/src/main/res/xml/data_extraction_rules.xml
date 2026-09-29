@@ -5,6 +5,7 @@
 -->
 <data-extraction-rules>
     <cloud-backup>
+        <exclude domain="file" path="models/" />
         <!-- TODO: Use <include> and <exclude> to control what is backed up.
         <include .../>
         <exclude .../>
@@ -12,6 +13,7 @@
     </cloud-backup>
     <!--
     <device-transfer>
+        <exclude domain="file" path="models/" />
         <include .../>
         <exclude .../>
     </device-transfer>

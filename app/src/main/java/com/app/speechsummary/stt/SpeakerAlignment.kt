@@ -5,10 +5,14 @@ import com.whispercpp.whisper.WhisperSegment
 
 /** Match each text segment to the voice occupying most of its time span. */
 internal object SpeakerAlignment {
+    data class Turn(val start: Double, val end: Double, val speaker: Int)
+
     fun align(
         segments: List<WhisperSegment>,
         turns: List<OfflineSpeakerDiarizationSegment>
-    ): List<String> {
+    ): List<String> = alignTurns(segments, turns.map { Turn(it.start.toDouble(), it.end.toDouble(), it.speaker) })
+
+    fun alignTurns(segments: List<WhisperSegment>, turns: List<Turn>): List<String> {
         val speakerOrder = turns.map { it.speaker }.distinct()
         val bySpeaker = turns.groupBy { it.speaker }
         return segments.map { segment ->
@@ -21,9 +25,8 @@ internal object SpeakerAlignment {
         }
     }
 
-    private fun overlap(text: WhisperSegment, turn: OfflineSpeakerDiarizationSegment): Double =
-        (minOf(text.endSeconds, turn.end.toDouble()) -
-            maxOf(text.startSeconds, turn.start.toDouble())).coerceAtLeast(0.0)
+    private fun overlap(text: WhisperSegment, turn: Turn): Double =
+        (minOf(text.endSeconds, turn.end) - maxOf(text.startSeconds, turn.start)).coerceAtLeast(0.0)
 
     private fun letter(index: Int): String {
         var value = index

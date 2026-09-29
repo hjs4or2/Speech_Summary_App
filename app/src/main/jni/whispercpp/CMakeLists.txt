@@ -22,3 +22,4 @@ target_include_directories(whisper PRIVATE
     ${WHISPER_ROOT}/ggml/src/ggml-cpu
 )
 target_link_libraries(whisper ${LOG_LIB} android ggml ggml-cpu ggml-base)
+target_link_options(whisper PRIVATE "-Wl,--exclude-libs,ALL")

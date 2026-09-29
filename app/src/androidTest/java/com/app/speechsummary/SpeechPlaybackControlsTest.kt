@@ -49,6 +49,8 @@ class SpeechPlaybackControlsTest {
                     onExtractText = { extractionId = it },
                     onTogglePlayback = { playbackId = it },
                     onCancelText = {},
+                    onCreateDocument = {},
+                    onCancelDocument = {},
                     onRenameTitle = { _, _ -> },
                     onSpeakerCountChange = { _, _ -> },
                     onSettingsClick = {}
@@ -90,6 +92,8 @@ class SpeechPlaybackControlsTest {
                     onExtractText = {},
                     onTogglePlayback = {},
                     onCancelText = {},
+                    onCreateDocument = {},
+                    onCancelDocument = {},
                     onRenameTitle = { _, _ -> },
                     onSpeakerCountChange = { id, count ->
                         changedId = id

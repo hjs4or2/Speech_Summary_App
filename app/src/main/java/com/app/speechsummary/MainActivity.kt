@@ -14,6 +14,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModelProvider
 import com.app.speechsummary.ui.SettingsScreen
+import com.app.speechsummary.ui.ModelSetupScreen
 import com.app.speechsummary.ui.SpeechScreen
 import com.app.speechsummary.ui.SpeechViewModel
 import com.app.speechsummary.ui.theme.SpeechSummaryTheme
@@ -23,6 +24,9 @@ class MainActivity : ComponentActivity() {
 
     private val importLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.importMedia(uri)
+    }
+    private val modelLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) viewModel.installModel(uri)
     }
 
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -34,12 +38,25 @@ class MainActivity : ComponentActivity() {
         viewModel = ViewModelProvider(this)[SpeechViewModel::class.java]
         setContent {
             var showSettings by rememberSaveable { mutableStateOf(false) }
+            var showSetup by rememberSaveable { mutableStateOf(true) }
             BackHandler(showSettings) { showSettings = false }
+            BackHandler(showSetup && !showSettings && viewModel.state.requiredMissingModels.isNotEmpty()) { showSetup = false }
             SpeechSummaryTheme {
                 if (showSettings) SettingsScreen(
                     state = viewModel.state,
                     onBack = { showSettings = false },
-                    onParallelToggle = viewModel::setParallelEnabled
+                    onParallelToggle = viewModel::setParallelEnabled,
+                    onDiarizationEngineChange = viewModel::setDiarizationEngine,
+                    onWhisperModelChange = viewModel::setWhisperModel,
+                    onImportModel = { modelLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
+                    onDownloadModels = viewModel::downloadModels,
+                    onCancelDownload = viewModel::cancelModelDownload
+                ) else if (showSetup && viewModel.state.requiredMissingModels.isNotEmpty()) ModelSetupScreen(
+                    state = viewModel.state,
+                    onDownloadModels = viewModel::downloadModels,
+                    onCancelDownload = viewModel::cancelModelDownload,
+                    onWhisperModelChange = viewModel::setWhisperModel,
+                    onLater = { showSetup = false }
                 ) else SpeechScreen(
                     state = viewModel.state,
                     onRecordClick = {
@@ -55,6 +72,8 @@ class MainActivity : ComponentActivity() {
                     onExtractText = viewModel::extractText,
                     onTogglePlayback = viewModel::togglePlayback,
                     onCancelText = viewModel::cancelTranscription,
+                    onCreateDocument = viewModel::createDocument,
+                    onCancelDocument = viewModel::cancelDocument,
                     onRenameTitle = viewModel::renameTitle,
                     onSpeakerCountChange = viewModel::setSpeakerCount,
                     onSettingsClick = { showSettings = true },

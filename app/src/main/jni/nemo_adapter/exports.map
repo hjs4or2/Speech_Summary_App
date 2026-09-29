@@ -1,0 +1,6 @@
+{
+    global:
+        Java_com_app_speechsummary_stt_NemotronNative_diarize;
+    local:
+        *;
+};

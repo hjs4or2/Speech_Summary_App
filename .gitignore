@@ -24,4 +24,8 @@ app/src/main/assets/ggml-medium.bin
 app/src/main/assets/speaker-*.onnx
 app/libs/*.aar
 /local-models/
+/llama-b9878.tar.gz
 /dist/
+/.android-user/
+/.kotlin/
+/analytics.settings

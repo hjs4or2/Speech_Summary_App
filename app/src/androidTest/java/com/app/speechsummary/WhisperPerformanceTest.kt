@@ -4,9 +4,12 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.app.speechsummary.data.DownloadableModels
+import com.app.speechsummary.data.ModelKind
 import com.whispercpp.whisper.WhisperContext
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -15,6 +18,8 @@ import org.junit.runner.RunWith
 class WhisperPerformanceTest {
     @Test fun shortSpeechTiming() = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val model = DownloadableModels(instrumentation.targetContext).file(ModelKind.WHISPER)
+        assumeTrue("Install models in the app before this performance test", model.isFile)
         val bytes = ByteArray(32_000 * 5)
         instrumentation.context.assets.open("four-speakers.wav").use { input ->
             check(input.skip(44) == 44L)
@@ -30,7 +35,7 @@ class WhisperPerformanceTest {
                 .toShort() / 32768f)
         }
         val start = SystemClock.elapsedRealtime()
-        val engine = WhisperContext.createContextFromAsset(instrumentation.targetContext.assets, "ggml-medium.bin")
+        val engine = WhisperContext.createContextFromFile(model.absolutePath)
         Log.i("WhisperPerformance", "model_load_ms=${SystemClock.elapsedRealtime() - start}")
         try {
             repeat(2) { run ->

@@ -8,6 +8,8 @@ import com.k2fsa.sherpa.onnx.OfflineSpeakerSegmentationModelConfig
 import com.k2fsa.sherpa.onnx.OfflineSpeakerSegmentationPyannoteModelConfig
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
 import com.whispercpp.whisper.WhisperSegment
+import com.app.speechsummary.data.DownloadableModels
+import com.app.speechsummary.data.ModelKind
 import java.io.File
 import java.io.RandomAccessFile
 import kotlin.math.min
@@ -31,18 +33,19 @@ class SpeakerDiarizer(
         // With one known speaker there is nothing to cluster. Avoid splitting
         // changes in that person's voice into spurious new speakers.
         if (expectedSpeakerCount == 1) return List(segments.size) { "A" }
+        val models = DownloadableModels(context)
         val diarizer = OfflineSpeakerDiarization(
-            context.assets,
+            null,
             OfflineSpeakerDiarizationConfig(
                 segmentation = OfflineSpeakerSegmentationModelConfig(
                     pyannote = OfflineSpeakerSegmentationPyannoteModelConfig(
-                        model = "speaker-segmentation.onnx",
+                        model = models.file(ModelKind.SEGMENTATION).absolutePath,
                         windowShiftRatio = 0.1f
                     ),
                     numThreads = 2
                 ),
                 embedding = SpeakerEmbeddingExtractorConfig(
-                    model = "speaker-eres2net.onnx",
+                    model = models.file(ModelKind.EMBEDDING).absolutePath,
                     numThreads = 2
                 ),
                 clustering = FastClusteringConfig(
